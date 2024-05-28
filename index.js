@@ -3,14 +3,16 @@ const cors = require('cors');
 const jwt = require('jsonwebtoken');
 require('dotenv').config();
 const app = express();
+
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+console.log(process.env.STRIPE_SECRET_KEY);
 const port = process.env.PORT || 5000;
 
 app.use(cors());
 app.use(express.json());
 
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
-const uri =
-  'mongodb+srv://jewelmia2330:iulCUA92paeoW87q@cluster0.lcsn1wa.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0';
+const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.lcsn1wa.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
 
 // Create a MongoClient with a MongoClientOptions object to set the Stable API version
 const client = new MongoClient(uri, {
@@ -133,7 +135,7 @@ async function run() {
       const item = req.body;
       const result = await menuCollection.insertOne(item);
       res.send(result);
-      console.log(item);
+      // console.log(item);
     });
 
     app.get('/menu', async (req, res) => {
@@ -176,6 +178,13 @@ async function run() {
       res.send(result);
     });
 
+    app.post('/reviews', async (req, res) => {
+      const item = req.body;
+      console.log(item);
+      const result = await reviewsCollection.insertOne(item);
+      res.send(result);
+    });
+
     app.get('/reviews', async (req, res) => {
       const result = await reviewsCollection.find().toArray();
       res.send(result);
@@ -188,11 +197,27 @@ async function run() {
       // console.log(item);
     });
 
-    app.post('/payments', async (req, res) => {
-      const item = req.body;
-      const result = await paymentsCollection.insertOne(item);
+    app.get('/payments', async (req, res) => {
+      const result = await paymentsCollection.find().toArray();
       res.send(result);
-      console.log(item);
+    });
+
+    app.post('/payments', async (req, res) => {
+      try {
+        const item = req.body;
+        const result = await paymentsCollection.insertOne(item);
+        const query = {
+          _id: {
+            $in: item.cartId.map(id => new ObjectId(id)),
+          },
+        };
+        const deleteItem = await cartsCollection.deleteMany(query);
+        res.send({ result, deleteItem });
+        // console.log(item);
+      } catch (error) {
+        console.error(error);
+        res.status(500).send('Internal Server Error');
+      }
     });
 
     app.get('/payments', async (req, res) => {
@@ -202,12 +227,26 @@ async function run() {
       res.send(result);
     });
 
-    app.get('/payments', async (req, res) => {
+    app.get('/admin-stats', async (req, res) => {
       try {
-        const result = await paymentsCollection.find().toArray();
-        res.send(result);
+        const result = await paymentsCollection
+          .aggregate([
+            {
+              $group: {
+                _id: null,
+                totalRevenue: {
+                  $sum: '$price',
+                },
+              },
+            },
+          ])
+          .toArray();
+
+        const revenue = result.length > 0 ? result[0].totalRevenue : 0;
+        res.status(200).json({ revenue });
       } catch (error) {
-        res.status(500).send({ message: 'Failed to retrieve payments', error });
+        console.error('Error fetching admin stats:', error);
+        res.status(500).json({ message: 'Internal Server Error' });
       }
     });
 
@@ -223,6 +262,34 @@ async function run() {
       const query = { _id: new ObjectId(id) };
       const result = await cartsCollection.deleteOne(query);
       res.send(result);
+    });
+
+    //payments
+
+    app.post('/create-payment-intent', async (req, res) => {
+      try {
+        const { price } = req.body;
+        // console.log(price);
+        if (!price) {
+          return res.status(400).send({ error: 'Price is required' });
+        }
+
+        const amount = parseInt(price * 100);
+        // console.log('Creating payment intent with amount:', amount);
+
+        const paymentIntent = await stripe.paymentIntents.create({
+          amount: amount,
+          currency: 'usd',
+          payment_method_types: ['card'],
+        });
+
+        res.send({
+          clientSecret: paymentIntent.client_secret,
+        });
+      } catch (error) {
+        console.error('Error creating payment intent:', error);
+        res.status(500).send({ error: 'Internal Server Error' });
+      }
     });
 
     // Send a ping to confirm a successful connection
